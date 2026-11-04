@@ -1,1 +1,106 @@
+For Census Data, we used the US Census Bureau API (Using a key requested at https://api.census.gov/data/key_signup.html)
 
+This census API call at the tract-level includes: Demographics (Race, Age, Sex), Income data (household, family, per capita),Poverty Ratios, Household data (receiving SNAP, vehicle information, worker commute information)
+
+The following code was used to request the data:
+-------------------------------------------------------------------------------------
+# get census API data
+import getpass
+import os
+import json
+import urllib.request
+
+CENSUS_API_KEY = os.environ.get('CENSUS_API_KEY')
+
+if CENSUS_API_KEY is None:
+    try:
+        # DataHub: a masked prompt appears below this cell. Nothing you type is saved.
+        entered = getpass.getpass('Census API key (press Enter to skip): ')
+        CENSUS_API_KEY = entered.strip() or None
+    except Exception:
+        CENSUS_API_KEY = None
+
+print('Key available:', CENSUS_API_KEY is not None)
+
+def fetch_bay_tracts(api_key):
+    """Fetch 2024 ACS 5-year data for selected tracts 
+    (Alameda, Contra Costa, SF).
+    """
+    url = ("https://api.census.gov/data/2024/acs/acs5?get=NAME,B03002_001E,B03002_003E,B03002_004E,"
+           "B03002_005E,B03002_006E,B03002_007E,B03002_008E,B03002_009E,B03002_012E,B01002_001E,B09001_001E,"
+           "B01001_020E,B01001_021E,B01001_022E,B01001_023E,B01001_024E,B01001_025E,B01001_044E,B01001_045E,"
+           "B01001_046E,B01001_047E,B01001_048E,B01001_049E,B19013_001E,B19113_001E,B19301_001E,C17002_001E,"
+           "C17002_002E,C17002_003E,C17002_004E,C17002_005E,C17002_006E,C17002_007E,B22003_002E,B08201_001E,"
+           "B08201_002E,B08201_003E,B08201_004E,B08201_005E,B08201_006E,B25046_001E,B25010_001E,B08301_001E,"
+           "B08301_010E,B08301_019E,B08301_021E&for=tract:*&in=state:06&in=county:001,013,075"f"&key={api_key}")
+    
+    with urllib.request.urlopen(url, timeout=30) as response:
+        content_type = response.headers.get('Content-Type', '')
+        body = response.read()
+
+    # A missing or rejected key does not produce an HTTP error. The API sends back an
+    # ordinary web page, so check what arrived before trying to read it as data.
+    if 'json' not in content_type:
+        raise RuntimeError('the API returned a web page instead of data; '
+                           'the key was probably missing or rejected')
+
+    # The data is a list of lists, and the first list is the header row.
+    rows = json.loads(body)
+    return pd.DataFrame(rows[1:], columns=rows[0])
+
+api_tracts = None
+
+if CENSUS_API_KEY:
+    try:
+        api_tracts = fetch_bay_tracts(CENSUS_API_KEY)
+        print('Rows from the API:', len(api_tracts))
+        print(api_tracts.head())
+    except Exception as error:
+        print('The API call did not succeed:', error)
+        print('Carrying on with the file that ships with this notebook.')
+else:
+    print('No key, so no API call. The shipped file is already loaded as `tracts`.')
+# Rename columns from API call
+rename_map = {
+    "NAME": "tract_name",
+    "B03002_001E": "total_pop", "B03002_003E": "nh_white", "B03002_004E": "nh_black",
+    "B03002_005E": "nh_aian", "B03002_006E": "nh_asian", "B03002_007E": "nh_nhpi",
+    "B03002_008E": "nh_other_race", "B03002_009E": "nh_two_or_more", "B03002_012E": "hispanic_latino",
+    "B01002_001E": "median_age", "B09001_001E": "pop_under_18",
+    "B01001_020E": "male_65_66", "B01001_021E": "male_67_69", "B01001_022E": "male_70_74",
+    "B01001_023E": "male_75_79", "B01001_024E": "male_80_84", "B01001_025E": "male_85_plus",
+    "B01001_044E": "female_65_66", "B01001_045E": "female_67_69", "B01001_046E": "female_70_74",
+    "B01001_047E": "female_75_79", "B01001_048E": "female_80_84", "B01001_049E": "female_85_plus",
+    "B19013_001E": "median_hh_income", "B19113_001E": "median_family_income", "B19301_001E": "per_capita_income",
+    "C17002_001E": "poverty_universe", "C17002_002E": "ratio_u050", "C17002_003E": "ratio_050_099",
+    "C17002_004E": "ratio_100_124", "C17002_005E": "ratio_125_149", "C17002_006E": "ratio_150_184",
+    "C17002_007E": "ratio_185_199",
+    "B22003_002E": "hh_snap",
+    "B08201_001E": "total_hh", "B08201_002E": "hh_veh_0", "B08201_003E": "hh_veh_1",
+    "B08201_004E": "hh_veh_2", "B08201_005E": "hh_veh_3", "B08201_006E": "hh_veh_4plus",
+    "B25046_001E": "aggregate_vehicles", "B25010_001E": "avg_hh_size",
+    "B08301_001E": "total_workers", "B08301_010E": "workers_transit",
+    "B08301_019E": "workers_walk", "B08301_021E": "workers_wfh",
+    }
+api_tracts = api_tracts.rename(columns=rename_map)
+api_tracts.head()
+------------------------------------------------------------------------------------
+### Reading in selected Bay Area counties from MTC census map (https://opendata.mtc.ca.gov/datasets/san-francisco-bay-region-2020-census-tracts-clipped/about) for geometry coordinates, merging api call data into a dataframe that is saved and then used for the rest of data processing. 
+
+# read in bay area tracts shapefile for geometry & save to csv (for mapping)
+bay_tracts = gpd.read_file("/home/jovyan/cityplanning_proj/census_tract_data/census_bay_area_tracts_2020.shp")
+bay_csv = bay_tracts.to_csv("/home/jovyan/cityplanning_proj/selected_bay_tracts",index=False)
+
+# get selected Bay Area Counties Tracts (Alameda, Contra Costa, SF, Solano County)
+s_counties=['06001','06013','06075']
+s_tracts_df = bay_tracts[bay_tracts["geoid"].str.startswith(tuple(s_counties))].copy()
+
+# joining api data with selected census tract geometry
+merged = api_tracts.merge(s_tracts_df, left_on="tract", right_on="tract", how="left")
+merged.head() # merged df- api data & w/selected tracts geom
+
+# save census data to csv
+selected_census_data = merged.to_csv("/home/jovyan/cityplanning_proj/selected_census_data",index=False)
+-------------------------------------------------------------------------------------
+
+## selected_census_data is saved as a csv & includes the relevant data from the api call as well as merged with geometry from the MTC data for mapping. This df is used for all the following census data processing. 
